@@ -4,9 +4,13 @@ __pycache__/
 .DS_Store
 tests/screenshots/
 
-# Generated model pipeline output (scripts/build.sh writes these)
+# Generated model pipeline output (scripts/build.sh writes these).
+# The build scripts themselves are pipeline code and stay tracked; only their
+# outputs (downloaded sources, intermediate GLB/JSON) are ignored.
 /models_src/
-/build/
+/build/*
+!/build/*.py
+!/build/*.sh
 
 # Android build output (the WebView project is kept for reference; the APK is
 # no longer shipped - the install path is the browser)

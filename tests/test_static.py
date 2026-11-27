@@ -160,9 +160,10 @@ check("远景环由街区尺寸推导",
       "BLOCK_SPAN" in radius_expr and "RING_SCALE" in radius_expr, radius_expr)
 check("远景环至少五份", "RING_COPIES = 5" in city_js)
 # Build inputs stay out of the shipped payload: assets/ carries only the GLB.
+# models_src/ itself is git-ignored (1.5 GB of source assets), so a fresh clone
+# is expected not to have it; this only guards the shipped folder.
 check("城市构建源不在 assets 内",
-      not (ASSETS / "scenes" / "city" / "city.fbx").exists()
-      and (ROOT / "models_src" / "_unity_city" / "web" / "city_web.fbx").exists())
+      not (ASSETS / "scenes" / "city" / "city.fbx").exists())
 
 # --- 天空：Unity 项目自带的三张 HDRI --------------------------------------
 sky_js = (ROOT / "js" / "sky.js").read_text(encoding="utf-8")
