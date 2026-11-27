@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FBX → GLB 转换（一次性工具）</title>
+<style>
+  body { background:#111; color:#ddd; font:13px/1.6 ui-monospace, monospace; padding:20px; }
+  pre { white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<pre id="log">starting…</pre>
+<script type="importmap">
+{
+  "imports": {
+    "three": "/vendor/three/three.module.js",
+    "three/addons/": "/vendor/three/addons/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const logEl = document.getElementById('log');
+const lines = [];
+const log = (...a) => { lines.push(a.join(' ')); logEl.textContent = lines.join('\n'); };
+
+const q = new URLSearchParams(location.search);
+const SRC = q.get('src') || '/models_src/_unity_city/web/city_web.fbx';
+// A binary FBX only stores bare texture names, so the sheets have to sit beside
+// it. They live together in the build folder - the app only loads city.glb.
+const TEX_BASE = q.get('tex') || SRC.slice(0, SRC.lastIndexOf('/') + 1);
+const TARGET = parseFloat(q.get('span') || '620');
+// Radius of the clearing the garage stands in. Meshes that sit wholly inside it
+// are dropped, so the garage is not built through a shop front or a hedge.
+const PLAZA = parseFloat(q.get('plaza') || '0');
+// 'auto' finds the city's walkable deck (the biggest flat road/ground plane);
+// a number pins it.
+const GROUND = q.get('ground') || 'auto';
+const CULL_UNDER = q.get('cull') !== '0';
+const OUT = q.get('out') || 'city_raw.glb';
+// The FBX points at Glass.jpg, a texture the Unity project never had (Glass.mat
+// is an untextured transparent material). Those meshes are given a real facade
+// so the glass towers are towers instead of black slabs.
+const GLASS_MAP = q.get('glassmap') || 'building_b.jpg';
+const GLASS_LIT = q.get('glasslit') || 'building_b_lit.jpg';
+const cacheBust = q.get('bv') || Date.now().toString(36);
+
+// Albedo (by base name) → the Unity set's night window-light map for the same
+// facade. The FBX has no emissive slot, so this is the one place the night look
+// is reconstructed from the Unity scene's own assets.
+const LIT = {
+  building_a: 'building_a_lit.jpg',
+  building_b: 'building_b_lit.jpg',
+  banner: 'banner_lit.jpg',
+};
+// Mirrors sit flatter than stone; plants take no specular worth speaking of.
+const ROUGH = {
+  building_a: 0.72,
+  building_b: 0.68,
+  ground: 0.95,
+  Road: 0.88,
+  props_a: 0.8,
+  props_b: 0.82,
+  banner: 0.62,
+  vegetation_a: 0.95,
+  vegetation_b: 0.95,
+};
+// Sheets whose alpha channel is the shape of the thing, not a full-coverage mask.
+const ALPHA_TEST = new Set(['vegetation_a', 'vegetation_b']);
+
+/** Filename a map came from, so a material can be identified across the merge. */
+function mapName(tex) {
+  const img = tex && tex.image;
+  if (!img) return null;
+  const src = img.currentSrc || img.src || '';
+  return src.split('/').pop() || null;
+}
+
+/**
+ * Phong → PBR, once, before the merge.
+ *
+ * glTF has no Phong model: exporting one leaves metallicFactor at its 1.0
+ * default, which with no reflections renders every building black. Rebuilding
+ * each material as MeshStandardMaterial also gives the night light maps a home
+ * and puts the dangling Glass reference on a real facade.
+ *
+ * The FBX's own decoded maps are reused rather than reloaded - they already
+ * point at the re-encoded 2048² JPEGs sitting next to the FBX.
+ */
+async function normaliseMaterials(root, texCache) {
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh && o.material) meshes.push(o); });
+  const cache = new Map();
+  const made = [];
+
+  for (const obj of meshes) {
+    const src = [].concat(obj.material)[0];
+    if (!src) continue;
+    if (cache.has(src)) { obj.material = cache.get(src); continue; }
+
+    const img = src.map && src.map.image;
+    // Smaller than a thumbnail means the dangling Glass.jpg placeholder.
+    const glass = !img || img.width < 32 || img.height < 32;
+    const albedoName = glass ? GLASS_MAP : mapName(src.map);
+    const base = (albedoName || '').replace(/\.[a-z]+$/, '');
+    const litName = glass ? GLASS_LIT : (LIT[base] || null);
+
+    // Always decode the albedo afresh from the directory beside the FBX: the
+    // loader's own copy may have come from a stale HTTP cache, and the two
+    // foliage sheets are PNG with an alpha channel that a JPEG would flatten.
+    const map = await texture(texCache, albedoName, THREE.SRGBColorSpace);
+
+    const cutout = ALPHA_TEST.has(base);
+    const mat = new THREE.MeshStandardMaterial({
+      // Unity's Glass.mat is black at 2.7 % alpha - a curtain wall with nothing
+      // modelled behind it. Rendered opaque that reads as a black slab, so the
+      // towers get a cool tint over the bright building_b facade instead.
+      color: new THREE.Color(glass ? 0xc6d6e4 : 0xffffff),
+      metalness: 0.0,
+      roughness: glass ? 0.34 : (ROUGH[base] ?? 0.78),
+      side: cutout ? THREE.DoubleSide : (src.side ?? THREE.FrontSide),
+      vertexColors: Boolean(src.vertexColors),
+      // Leaves are a flat sheet with the bush cut out of it. Without a cutoff
+      // the discarded texels render as the sheet: black boxes of foliage.
+      alphaTest: cutout ? 0.5 : 0,
+    });
+    mat.name = src.name;
+    if (map) mat.map = map;
+
+    const lit = await texture(texCache, litName, THREE.SRGBColorSpace);
+    if (lit) {
+      mat.emissiveMap = lit;
+      mat.emissive.setRGB(1, 1, 1);
+      mat.emissiveIntensity = 1;
+    }
+
+    mat.userData = { albedoName, litName, glass, cutout };
+    cache.set(src, mat);
+    made.push(mat);
+    obj.material = mat;
+  }
+  return made;
+}
+
+/** Decode an image file into a Texture, sharing one copy per URL. */
+async function texture(texCache, name, colorSpace) {
+  if (!name) return null;
+  const key = `${name}|${colorSpace}`;
+  if (texCache.has(key)) return texCache.get(key);
+  // `?v=` busts the HTTP cache: these files get re-encoded between runs and an
+  // image loader happily serves yesterday's bytes without it.
+  const tex = await new THREE.TextureLoader()
+    .setPath(TEX_BASE)
+    .loadAsync(`${name}?v=${cacheBust}`);
+  tex.colorSpace = colorSpace;
+  tex.anisotropy = 8;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.name = name;
+  texCache.set(key, tex);
+  return tex;
+}
+
+/**
+ * Poll until every map in the FBX has an image.
+ *
+ * FBXLoader resolves as soon as the geometry is parsed and files the decoded
+ * image into `texture.image` later. There is no event to listen for on the
+ * Texture, and `texture.source.data` does not exist yet at that point, so the
+ * only reliable way to know is to look.
+ */
+async function waitForTextures(root, timeout = 20000) {
+  const collect = () => {
+    const maps = new Set();
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of [].concat(o.material || [])) {
+        if (!m) continue;
+        for (const k of ['map', 'emissiveMap', 'normalMap', 'specularMap', 'alphaMap']) if (m[k]) maps.add(m[k]);
+      }
+    });
+    return [...maps];
+  };
+  const ready = (t) => Boolean(t.image && (t.image.width || t.image.naturalWidth));
+  const deadline = performance.now() + timeout;
+  let maps = collect();
+  while (!maps.every(ready)) {
+    if (performance.now() > deadline) return { ok: false, maps };
+    await new Promise((r) => setTimeout(r, 60));
+    maps = collect();
+  }
+  return { ok: true, maps };
+}
+
+function stats(root) {
+  let verts = 0, tris = 0, meshes = 0;
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    meshes++;
+    const g = o.geometry;
+    const n = g.attributes.position ? g.attributes.position.count : 0;
+    verts += n;
+    tris += g.index ? g.index.count / 3 : n / 3;
+  });
+  return { meshes, verts, tris };
+}
+
+/** Distance from the origin to a box, in the ground plane only. */
+function boxDistance(box) {
+  const dx = box.min.x <= 0 && box.max.x >= 0 ? 0 : Math.min(Math.abs(box.min.x), Math.abs(box.max.x));
+  const dz = box.min.z <= 0 && box.max.z >= 0 ? 0 : Math.min(Math.abs(box.min.z), Math.abs(box.max.z));
+  return Math.hypot(dx, dz);
+}
+
+/** How far the box's farthest corner is from the origin - wholly-inside test. */
+function boxReach(box) {
+  let r = 0;
+  for (const x of [box.min.x, box.max.x]) {
+    for (const z of [box.min.z, box.max.z]) r = Math.max(r, Math.hypot(x, z));
+  }
+  return r;
+}
+
+function mergeByMaterial(root) {
+  const buckets = new Map();
+  root.updateMatrixWorld(true);
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    const geo = o.geometry.clone();
+    geo.applyMatrix4(o.matrixWorld);
+    const mat = [].concat(o.material || [])[0];
+    if (!mat) return;
+    if (!buckets.has(mat)) buckets.set(mat, []);
+    buckets.get(mat).push(geo);
+  });
+
+  const merged = new THREE.Group();
+  merged.name = 'CityMerged';
+  for (const [mat, geos] of buckets) {
+    // One attribute set across the whole bucket, decided by what the material
+    // needs rather than by whichever mesh happened to be first. A mismatch here
+    // makes mergeGeometries return null and the bucket silently disappears.
+    const want = ['position', 'normal', 'uv'];
+    if (mat.vertexColors) want.push('color');
+    for (const geo of geos) {
+      for (const k of Object.keys(geo.attributes)) if (!want.includes(k)) geo.deleteAttribute(k);
+      if (!geo.attributes.normal) geo.computeVertexNormals();
+      const n = geo.attributes.position?.count || 0;
+      if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+      if (mat.vertexColors && !geo.attributes.color) {
+        // Neutral white, so a prop that never carried a tint keeps its map.
+        const c = new Float32Array(n * 3).fill(1);
+        geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
+      }
+    }
+    const geo = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
+    if (!geo) {
+      log(`  !! merge failed for ${mat.name} (${geos.length} meshes)`);
+      continue;
+    }
+    if (geos.length > 1) geos.forEach((g) => g.dispose());
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = `City_${mat.name.replace(/\s+/g, '')}`;
+    merged.add(mesh);
+  }
+  return merged;
+}
+
+(async () => {
+  try {
+    log('loading', SRC);
+    const t0 = performance.now();
+    const fbx = await new FBXLoader().loadAsync(SRC);
+    log(`loaded in ${(performance.now() - t0).toFixed(0)} ms`);
+
+    const raw = stats(fbx);
+    const box = new THREE.Box3().setFromObject(fbx);
+    const size = box.getSize(new THREE.Vector3());
+    log(`raw: ${raw.meshes} meshes · ${raw.verts} verts · ${Math.round(raw.tris)} tris`);
+    log(`raw bbox: ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} cm`);
+
+    // Normalise: longest ground axis → TARGET metres, centred on x/z.
+    const span = Math.max(size.x, size.z, 1e-6);
+    fbx.scale.setScalar(TARGET / span);
+    fbx.updateMatrixWorld(true);
+    const placed = new THREE.Box3().setFromObject(fbx);
+    const center = placed.getCenter(new THREE.Vector3());
+    fbx.position.x -= center.x;
+    fbx.position.z -= center.z;
+    fbx.position.y -= placed.min.y;
+    fbx.updateMatrixWorld(true);
+
+    // The bbox floor is the *underside* of the kit: the city's walkable deck is
+    // the big flat road/ground plane, which sits well above it. Find that plane
+    // and treat it as y = 0, otherwise the garage ends up hanging in the void
+    // beneath the streets.
+    const planes = [];
+    fbx.traverse((o) => {
+      if (!o.isMesh) return;
+      const b = new THREE.Box3().setFromObject(o);
+      const s = b.getSize(new THREE.Vector3());
+      if (s.y > 0.5) return;
+      const area = s.x * s.z;
+      if (area < 400) return;
+      planes.push({ area, y: b.max.y, name: o.name, size: s });
+    });
+    planes.sort((a, b) => b.area - a.area);
+    log(`horizontal decks: ${planes.length}`);
+    for (const p of planes.slice(0, 5)) {
+      log(`  ${p.name.padEnd(20)} y ${p.y.toFixed(2)}  ${p.size.x.toFixed(0)}×${p.size.z.toFixed(0)} m  area ${(p.area / 1000).toFixed(1)}k m²`);
+    }
+    const DECK = GROUND === 'auto' ? (planes[0] ? planes[0].y : placed.min.y) : parseFloat(GROUND);
+    fbx.position.y -= DECK;
+    fbx.updateMatrixWorld(true);
+    const nb = new THREE.Box3().setFromObject(fbx);
+    log(`deck at ${DECK.toFixed(2)} → normalised y ${nb.min.y.toFixed(1)}…${nb.max.y.toFixed(1)} · x ${nb.min.x.toFixed(1)}…${nb.max.x.toFixed(1)} · z ${nb.min.z.toFixed(1)}…${nb.max.z.toFixed(1)}`);
+
+    // Everything under the deck is the kit's underside - never seen from the
+    // garage, and a large slice of the file.
+    if (CULL_UNDER) {
+      const doomed = [];
+      fbx.traverse((o) => {
+        if (!o.isMesh) return;
+        const b = new THREE.Box3().setFromObject(o);
+        if (b.max.y < -0.6) doomed.push(o);
+      });
+      let v = 0;
+      for (const o of doomed) {
+        v += o.geometry?.attributes?.position?.count || 0;
+        o.parent?.remove(o);
+        o.geometry?.dispose?.();
+      }
+      log(`cull under deck: ${doomed.length} meshes · ${v} verts`);
+    }
+
+    // --- what lives near the middle, where the garage would go ---------------
+    const near = [];
+    fbx.traverse((o) => {
+      if (!o.isMesh) return;
+      const b = new THREE.Box3().setFromObject(o);
+      const d = boxDistance(b);
+      if (d >= 90) return;
+      const s = b.getSize(new THREE.Vector3());
+      near.push({ d, name: o.name, y: [b.min.y, b.max.y], s: [s.x, s.y, s.z], mat: [].concat(o.material || [])[0]?.name });
+    });
+    near.sort((a, b) => a.d - b.d);
+    log(`meshes within 90 m of centre: ${near.length}`);
+    for (const n of near.slice(0, 14)) {
+      log(`  d=${n.d.toFixed(1).padStart(5)} ${n.name.padEnd(22)} y ${n.y[0].toFixed(1)}…${n.y[1].toFixed(1)}  size ${n.s.map((v) => v.toFixed(1)).join('×')}  ${n.mat}`);
+    }
+    // How much would each candidate plaza radius cost?
+    for (const r of [0, 12, 18, 24, 30, 40]) {
+      let kill = 0;
+      fbx.traverse((o) => {
+        if (!o.isMesh) return;
+        const b = new THREE.Box3().setFromObject(o);
+        if (boxReach(b) <= r) kill++;
+      });
+      log(`  plaza r=${r} m → drops ${kill} / ${raw.meshes} meshes`);
+    }
+
+    // --- carve the plaza ----------------------------------------------------
+    // Only meshes *wholly* inside the disc go. A road plane happens to contain
+    // the origin but reaches far past it, and deleting it would take the whole
+    // street with it.
+    if (PLAZA > 0) {
+      const doomed = [];
+      fbx.traverse((o) => {
+        if (!o.isMesh) return;
+        const b = new THREE.Box3().setFromObject(o);
+        if (boxReach(b) <= PLAZA) doomed.push(o);
+      });
+      for (const o of doomed) {
+        o.parent?.remove(o);
+        o.geometry?.dispose?.();
+      }
+      log(`plaza r=${PLAZA}: removed ${doomed.length} meshes`);
+    }
+
+    const t1 = performance.now();
+    const tw = await waitForTextures(fbx);
+    log(`textures: ${tw.maps.length} maps, ${tw.ok ? 'all decoded' : 'TIMEOUT'} in ${(performance.now() - t1).toFixed(0)} ms`);
+    for (const t of tw.maps) {
+      const im = t.image;
+      log(`  ${(im && (im.currentSrc || im.src || '').split('/').pop()) || '(none)'} ${im ? im.width + '×' + im.height : 'no image'}`);
+    }
+
+    const texCache = new Map();
+    const materials = await normaliseMaterials(fbx, texCache);
+    log(`materials: ${materials.length}`);
+    for (const mat of materials) {
+      log(`  ${(mat.name || '?').padEnd(14)} albedo=${mat.userData.albedoName || '-'} lit=${mat.userData.litName || '-'}` +
+        ` glass=${mat.userData.glass} metal=${mat.metalness} rough=${mat.roughness} vc=${mat.vertexColors}`);
+    }
+
+    const block = mergeByMaterial(fbx);
+    const ms = stats(block);
+    log(`merged: ${ms.meshes} meshes · ${ms.verts} verts · ${Math.round(ms.tris)} tris (${(performance.now() - t1).toFixed(0)} ms)`);
+    window.__CITY_STATS__ = { raw, merged: ms, bbox: { min: nb.min.toArray(), max: nb.max.toArray() } };
+
+    if (q.get('export') === '1') {
+      const t2 = performance.now();
+      log('exporting GLB…');
+      block.updateMatrixWorld(true);
+      const glb = await new Promise((res, rej) => {
+        new GLTFExporter().parse(block, res, rej, { binary: true, embedImages: true, onlyVisible: true });
+      });
+      log(`GLB ready in ${(performance.now() - t2).toFixed(0)} ms · ${(glb.byteLength / 1048576).toFixed(2)} MB`);
+      // Hand the file straight to the browser's downloader. There is deliberately
+      // no upload endpoint: the bake is a build step, so the operator saving the
+      // file and passing it to scripts/city_glb.mjs is the whole contract.
+      const name = OUT.split('/').pop() || 'city_raw.glb';
+      const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 120000);
+      log(`download started: ${name} — then run: node scripts/city_glb.mjs <dir of ${name}>/${name} assets/scenes/city/city.glb`);
+      window.__CITY_BYTES__ = glb.byteLength;
+    }
+    window.__CITY_DONE__ = true;
+    log('DONE');
+  } catch (err) {
+    log('FAILED: ' + (err && err.stack || err));
+    window.__CITY_FAILED__ = String(err && err.message || err);
+  }
+})();
+</script>
+</body>
+</html>

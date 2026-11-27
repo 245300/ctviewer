@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>人物与动作自检</title>
+<style>
+  html, body { margin:0; background:#0b0d10; color:#cfe3ff; font:12px/1.5 ui-monospace,monospace; }
+  #hud { padding:8px 12px; white-space:pre-wrap; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<canvas id="sheet"></canvas>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+// Audit page for the imported characters: renders one at a chosen clip/time so
+// the retargeted skeleton can be checked from the front, the side and 3/4.
+//   ?id=colphne&clip=Idle&t=1.2&view=front   (front | side | three | back)
+//   ?id=all&clip=Walking&t=0.4                (contact sheet of every character)
+const q = new URLSearchParams(location.search);
+const id = q.get('id') || 'colphne';
+const clipName = q.get('clip') || 'Idle';
+const time = Number(q.get('t') || 1);
+const view = q.get('view') || 'three';
+const width = Number(q.get('w') || 960);
+const height = Number(q.get('h') || 640);
+const hud = document.getElementById('hud');
+if (q.get('hud') === '0') hud.style.display = 'none';
+window.__ERR__ = [];
+window.addEventListener('error', (e) => window.__ERR__.push(String(e.error?.stack || e.message || e.error)));
+window.addEventListener('unhandledrejection', (e) => window.__ERR__.push('rejection: ' + (e.reason?.stack || e.reason)));
+
+const loader = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath('/vendor/draco/');
+loader.setDRACOLoader(draco);
+
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('sheet'), antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x151a20);
+const hemi = new THREE.HemisphereLight(0xdfefff, 0x2a3038, 2.2);
+scene.add(hemi);
+const key = new THREE.DirectionalLight(0xfff2e0, 2.6);
+key.position.set(3, 5, 4);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x7fb4ff, 2.0);
+rim.position.set(-4, 3, -3);
+scene.add(rim);
+const grid = new THREE.GridHelper(6, 12, 0x33506b, 0x22303d);
+scene.add(grid);
+
+const catalog = await fetch(`/assets/characters/characters.json?t=${Date.now()}`, { cache: 'no-store' }).then((r) => r.json());
+const animUrl = q.get('anim') || catalog.animationsUrl;
+const animGltf = await loader.loadAsync(`/${animUrl}?t=${Date.now()}`);
+const clips = new Map(animGltf.animations.map((c) => [c.name, c]));
+const ids = id === 'all' ? catalog.characters.map((c) => c.id) : [id];
+
+const DIRS = { front: [0, 0.12, 1], side: [1, 0.1, 0], three: [1, 0.35, 1], back: [0, 0.12, -1] };
+
+async function loadOne(cid) {
+  const meta = catalog.characters.find((c) => c.id === cid);
+  const gltf = await loader.loadAsync(`/${meta.url}?t=${Date.now()}`);
+  const root = gltf.scene;
+  const mixer = new THREE.AnimationMixer(root);
+  // clip=none renders the bind pose, so the rig itself can be checked before
+  // blaming the retargeted clips.
+  const clip = clipName === 'none' ? null : (clips.get(clipName) || clips.values().next().value);
+  if (clip) {
+    const action = mixer.clipAction(clip);
+    action.play();
+    mixer.setTime(time);
+  }
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root, true);
+  const size = box.getSize(new THREE.Vector3());
+  const skinned = [];
+  root.traverse((o) => { if (o.isSkinnedMesh) skinned.push(o); });
+  return { meta, root, mixer, clip, box, size, skinned };
+}
+
+const items = [];
+for (const cid of ids) items.push(await loadOne(cid));
+
+const cols = id === 'all' ? 4 : 1;
+const tile = Math.min(width / cols, height / Math.ceil(items.length / cols));
+const canvas = document.getElementById('sheet');
+renderer.setSize(tile * cols, tile * Math.ceil(items.length / cols));
+for (let i = 0; i < items.length; i++) {
+  const it = items[i];
+  it.camera = new THREE.PerspectiveCamera(32, 1, 0.05, 60);
+  const dir = new THREE.Vector3(...(DIRS[view] || DIRS.three)).normalize();
+  const focusName = q.get('focus');
+  // Bone names in the GLB keep their spaces ("Left wrist"); three sanitises
+  // them to underscores at load time, so try both spellings.
+  const focusBone = focusName
+    ? (it.root.getObjectByName(focusName.replace(/ /g, '_')) || it.root.getObjectByName(focusName))
+    : null;
+  let dist = Math.max(2.2, it.size.y * 1.55);
+  let center = it.box.getCenter(new THREE.Vector3());
+  if (focusBone) {
+    center = focusBone.getWorldPosition(new THREE.Vector3());
+    dist = Number(q.get('dist') || 0.9);
+  }
+  it.camera.position.copy(center).addScaledVector(dir, dist);
+  it.camera.lookAt(center);
+  it.scene = new THREE.Scene();
+  it.scene.background = scene.background;
+  it.scene.add(new THREE.HemisphereLight(0xdfefff, 0x2a3038, 2.2));
+  const k = new THREE.DirectionalLight(0xfff2e0, 2.6); k.position.set(3, 5, 4); it.scene.add(k);
+  const r = new THREE.DirectionalLight(0x7fb4ff, 1.6); r.position.set(-4, 3, -3); it.scene.add(r);
+  const g = new THREE.GridHelper(6, 12, 0x33506b, 0x22303d); it.scene.add(g);
+  it.scene.add(it.root);
+}
+
+let stats = null;
+{
+  const it = items[0];
+  const bones = [];
+  it.root.traverse((o) => { if (o.isBone) bones.push(o.name); });
+  const mesh = it.skinned[0];
+  const attrs = mesh ? mesh.geometry.attributes.position.count : 0;
+  stats = {
+    id: id,
+    clip: it.clip?.name || 'none',
+    clips: [...clips.keys()].length,
+    bones: bones.length,
+    verts: attrs,
+    skinned: it.skinned.length,
+    size: it.size.toArray().map((v) => +v.toFixed(2)),
+    minY: +it.box.min.y.toFixed(3),
+    has: ['Hips', 'Left leg', 'Left arm', 'Head'].filter((b) => bones.includes(b)),
+    sampleBones: bones.slice(0, 6),
+  };
+}
+hud.textContent = JSON.stringify(stats, null, 1);
+
+function place() {
+  const rows = Math.ceil(items.length / cols);
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  renderer.clear(true, true, true);
+  items.forEach((it, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const y = (rows - 1 - row) * tile;
+    renderer.setViewport(col * tile, y, tile, tile);
+    renderer.setScissor(col * tile, y, tile, tile);
+    renderer.render(it.scene, it.camera);
+  });
+  renderer.setScissorTest(false);
+}
+place();
+window.__DONE__ = true;
+window.__STATS__ = stats;
+window.__ITEMS__ = items;
+</script>
+</body>
+</html>

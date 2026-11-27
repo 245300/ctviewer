@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>车型朝向自检</title>
+<style>
+  html, body { margin:0; background:#0b0d10; color:#cfe3ff; font:12px/1.5 ui-monospace,monospace; }
+  #hud { padding:10px 14px; white-space:pre; }
+  canvas { display:block; }
+  #sole { display:none; }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<canvas id="sheet"></canvas>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+// Every car in the app is normalised to "long side on X, nose at +X" (see
+// _flattenAndNormalize in js/viewer.js) because the front camera preset sits on
+// +X and the part labeller reads +X as 前. Source assets are not that
+// consistent, so this page renders the whole library from a fixed side-on
+// camera and measures the shape: the nose should point to the right of every
+// tile. Cars that point left are the ones the shop must turn around.
+
+const TILE_W = 320, TILE_H = 180, LABEL_H = 34;
+const COLS = 6;
+const hud = document.getElementById('hud');
+const sheet = document.getElementById('sheet');
+const ctx = sheet.getContext('2d');
+const q = new URLSearchParams(location.search);
+const soleId = q.get('sole');
+// `?zoom=a,b,c` renders a few cars large, side-on and from the front corner:
+// at 320 px the nose and the tail of a mid-engine car look alike, and getting
+// a car's direction wrong is the one mistake this page exists to prevent.
+const zoomIds = (q.get('zoom') || '').split(',').filter(Boolean);
+
+const loader = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath('/vendor/draco/');
+loader.setDRACOLoader(draco);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(TILE_W, TILE_H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+function makeScene() {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x151a20);
+  const hemi = new THREE.HemisphereLight(0xdfefff, 0x2a3038, 2.4);
+  scene.add(hemi);
+  const key = new THREE.DirectionalLight(0xfff4e2, 3.0);
+  key.position.set(3.5, 6, 5);
+  scene.add(key);
+  const fill = new THREE.DirectionalLight(0xbcd8ff, 1.1);
+  fill.position.set(-5, 2.5, -2);
+  scene.add(fill);
+  return scene;
+}
+
+const camera = new THREE.PerspectiveCamera(30, TILE_W / TILE_H, 0.05, 200);
+
+/** Same bake the viewer does: flatten transforms, apply `rotate`/`flip`, scale to 4.55 m on X, centre, floor at 0. */
+function flatten(scene, car) {
+  scene.updateMatrixWorld(true);
+  const group = new THREE.Group();
+  const meshes = [];
+  const rotateFix = car?.rotate;
+  const fix = Array.isArray(rotateFix) && rotateFix.length === 3
+    ? new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(
+      THREE.MathUtils.degToRad(rotateFix[0]),
+      THREE.MathUtils.degToRad(rotateFix[1]),
+      THREE.MathUtils.degToRad(rotateFix[2])))
+    : null;
+  // `flip` turns the car around its own vertical axis first, exactly as
+  // _flattenAndNormalize does - the audit has to measure what ships.
+  const turn = car?.flip ? new THREE.Matrix4().makeRotationY(Math.PI) : null;
+  const bake = fix ? (turn ? fix.multiply(turn) : fix) : turn;
+
+  scene.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    const g = o.geometry.clone();
+    if (!g.attributes.normal) g.computeVertexNormals();
+    g.applyMatrix4(o.matrixWorld);
+    if (bake) g.applyMatrix4(bake);
+    const m = new THREE.Mesh(g, o.material);
+    m.name = o.name || 'part';
+    group.add(m);
+    meshes.push(m);
+  });
+
+  const box = new THREE.Box3();
+  for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
+  const size = box.getSize(new THREE.Vector3());
+  const scale = 4.55 / Math.max(size.x, size.z, 1e-6);
+  const yaw = size.z > size.x ? Math.PI / 2 : 0;
+  const xf = new THREE.Matrix4().makeRotationY(yaw).scale(new THREE.Vector3(scale, scale, scale));
+  for (const m of meshes) m.geometry.applyMatrix4(xf);
+
+  box.makeEmpty();
+  for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
+  const c = box.getCenter(new THREE.Vector3());
+  for (const m of meshes) m.geometry.translate(-c.x, -box.min.y, -c.z);
+
+  box.makeEmpty();
+  for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
+  group.updateMatrixWorld(true);
+  return { group, meshes, box };
+}
+
+/** Tame the source materials so shading reads in a plain lit scene. */
+function clayify(group) {
+  group.traverse((o) => {
+    if (!o.isMesh) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (!m) continue;
+      if ('metalness' in m) m.metalness = Math.min(m.metalness ?? 0, 0.18);
+      if ('roughness' in m) m.roughness = Math.max(m.roughness ?? 0.5, 0.45);
+      if ('envMapIntensity' in m) m.envMapIntensity = 0;
+      m.needsUpdate = true;
+    }
+  });
+}
+
+/**
+ * Shape measurements that survive being wrong on one axis.
+ *  cabin   mean x of everything above 62 % of the height, as a fraction of half
+ *          the length: negative means the greenhouse sits behind the centre,
+ *          which is true of every car here, so the nose is +X.
+ *  top     same for the top 10 % (roof, or a rear wing if there is one)
+ *  ends    mean y of the outer 18 % of the length at each end; a nose is lower
+ *  steer   mean x of any mesh that names a steering wheel
+ */
+function measure(meshes, box) {
+  const L = box.max.x - box.min.x;
+  const H = box.max.y - box.min.y;
+  const cx = (box.max.x + box.min.x) / 2;
+  let cabinX = 0, cabinN = 0, topX = 0, topN = 0;
+  let frontY = 0, frontN = 0, rearY = 0, rearN = 0;
+  for (const m of meshes) {
+    const pos = m.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i);
+      if (y > box.min.y + H * 0.62) { cabinX += x; cabinN++; }
+      if (y > box.min.y + H * 0.90) { topX += x; topN++; }
+      if (x > box.max.x - L * 0.18) { frontY += y; frontN++; }
+      if (x < box.min.x + L * 0.18) { rearY += y; rearN++; }
+    }
+  }
+  let steerX = null;
+  const half = L / 2 || 1;
+  for (const m of meshes) {
+    if (!/steer|volant|volan/i.test(m.name)) continue;
+    const b = m.geometry.boundingBox;
+    steerX = ((b.max.x + b.min.x) / 2 - cx) / half;
+  }
+  return {
+    cabinX: cabinN ? +((cabinX / cabinN - cx) / half).toFixed(3) : null,
+    topX: topN ? +((topX / topN - cx) / half).toFixed(3) : null,
+    ends: frontN && rearN ? +(((frontY / frontN) - (rearY / rearN)) / (H || 1)).toFixed(3) : null,
+    steerX: steerX === null ? null : +steerX.toFixed(3),
+  };
+}
+
+function label(txt, x, y, w) {
+  ctx.fillStyle = 'rgba(8,12,16,.92)';
+  ctx.fillRect(x, y, w, LABEL_H);
+  ctx.fillStyle = '#cfe3ff';
+  ctx.font = '12px ui-monospace,monospace';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(txt, x + 8, y + 12);
+}
+
+function arrow(x, y) {
+  ctx.fillStyle = '#66e0a3';
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x - 9, y - 5);
+  ctx.lineTo(x - 9, y + 5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// No-store: this page is the audit, so it must read the catalog as it is on
+// disk right now - a heuristically cached copy would audit the previous fix.
+const catalog = await (await fetch(`/assets/models/catalog.json?t=${Date.now()}`, { cache: 'no-store' })).json();
+const mode = q.get('mode') === 'faces' ? 'faces'
+  : zoomIds.length ? 'zoom' : (soleId ? 'sole' : 'sheet');
+const cars = (mode === 'sheet' || mode === 'faces')
+  ? catalog
+  : catalog.filter((c) => (mode === 'sole' ? c.id === soleId : zoomIds.includes(c.id)));
+const perRow = mode === 'sheet' || mode === 'faces' ? 1 : 2;   // tiles per car
+const cols = mode === 'sheet' ? COLS : (mode === 'faces' ? 4 : 1);
+const tw = mode === 'sheet' ? TILE_W : (mode === 'faces' ? 480 : (mode === 'sole' ? 960 : 640));
+const th = Math.round(tw * 9 / 16);
+const rowH = th + LABEL_H;
+const rows = Math.ceil(cars.length / cols);
+sheet.width = cols * perRow * tw;
+sheet.height = rows * rowH;
+const out = [];
+const t0 = performance.now();
+
+/** Point the camera at the car. `side` looks along −Z (nose to the right); `face` looks into the front corner. */
+function aim(kind, H) {
+  if (kind === 'face') {
+    const d = new THREE.Vector3(0.86, 0.52, 0.72).normalize().multiplyScalar(9.4);
+    camera.position.copy(d);
+    camera.lookAt(0, H * 0.40, 0);
+  } else {
+    camera.position.set(0, H * 0.62, 6.6);
+    camera.lookAt(0, H * 0.46, 0);
+  }
+}
+
+for (let i = 0; i < cars.length; i++) {
+  const car = cars[i];
+  const gltf = await loader.loadAsync(`/assets/models/${car.id}.glb`);
+  const { group, meshes, box } = flatten(gltf.scene, car);
+  clayify(group);
+  const m = measure(meshes, box);
+
+  const scene = makeScene();
+  scene.add(group);
+  const L = box.max.x - box.min.x;
+  const H = box.max.y;
+
+  const x0 = (i % cols) * perRow * tw;
+  const y0 = Math.floor(i / cols) * rowH;
+  const kinds = mode === 'sheet' ? ['side'] : (mode === 'faces' ? ['face'] : ['side', 'face']);
+  for (let v = 0; v < kinds.length; v++) {
+    aim(kinds[v], H);
+    renderer.setSize(tw, th);
+    renderer.render(scene, camera);
+    const vx = x0 + v * tw;
+    ctx.drawImage(renderer.domElement, vx, y0, tw, th);
+    if (kinds[v] === 'side') {
+      arrow(vx + tw - 14, y0 + th * 0.5);
+      ctx.font = '11px ui-monospace,monospace';
+      ctx.fillStyle = '#66e0a3';
+      ctx.fillText('+X 前', vx + tw - 58, y0 + th * 0.5 - 12);
+    }
+  }
+
+  const verdict = [m.cabinX === null ? '?' : (m.cabinX < 0 ? 'cabin>rear' : 'cabin>FRONT')];
+  if (m.steerX !== null) verdict.push(m.steerX > 0 ? 'steer>front' : 'steer>REAR');
+  label(`${car.id}  L${L.toFixed(1)}m  cabin ${m.cabinX}  ends ${m.ends}`, x0, y0 + th, sheet.width - x0);
+  ctx.font = '11px ui-monospace,monospace';
+  ctx.fillStyle = m.cabinX !== null && m.cabinX > 0.02 ? '#ff8080' : '#9fe8c4';
+  ctx.fillText(verdict.join(' · '), x0 + 8, y0 + th + 27);
+
+  out.push({ id: car.id, len: +L.toFixed(2), ...m });
+  scene.remove(group);
+  group.traverse((o) => { o.geometry?.dispose?.(); });
+  hud.textContent = `${i + 1}/${cars.length}  ${car.id}`;
+
+  // Yield so the tab stays responsive while 34 cars decode.
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+window.__ORIENT = out;
+window.__SHEET = sheet;
+window.__READY = true;
+hud.textContent = `${cars.length} cars (${mode}) in ${((performance.now() - t0) / 1000).toFixed(1)}s — arrow = +X (前)\n` +
+  out.map((o) => `${o.id.padEnd(22)} cabin ${String(o.cabinX).padStart(7)}  ends ${String(o.ends).padStart(7)}  steer ${o.steerX}`).join('\n');
+console.table(out);
+</script>
+</body>
+</html>

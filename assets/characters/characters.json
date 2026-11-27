@@ -1,0 +1,158 @@
+{
+  "animationsUrl": "assets/characters/animations.glb",
+  "refHipHeight": 0.8252,
+  "clips": [
+    {
+      "name": "Breakdance Ending 1",
+      "seconds": 6.5
+    },
+    {
+      "name": "Breakdance Freeze Var 3",
+      "seconds": 6.167
+    },
+    {
+      "name": "Butterfly Twirl",
+      "seconds": 3.067
+    },
+    {
+      "name": "Capoeira",
+      "seconds": 3.433
+    },
+    {
+      "name": "Fist Fight B",
+      "seconds": 4.667
+    },
+    {
+      "name": "Idle",
+      "seconds": 8.333
+    },
+    {
+      "name": "Jumping",
+      "seconds": 1.9
+    },
+    {
+      "name": "Martelo 2",
+      "seconds": 1.3
+    },
+    {
+      "name": "Roundhouse Kick",
+      "seconds": 2.133
+    },
+    {
+      "name": "Running",
+      "seconds": 0.7
+    },
+    {
+      "name": "Shoved Reaction With Spin",
+      "seconds": 4.533
+    },
+    {
+      "name": "Stable Sword Inward Slash",
+      "seconds": 2.2
+    },
+    {
+      "name": "Stand Up",
+      "seconds": 8.267
+    },
+    {
+      "name": "Standing Torch Melee Attack 01",
+      "seconds": 2.0
+    },
+    {
+      "name": "Walking",
+      "seconds": 1.033
+    }
+  ],
+  "characters": [
+    {
+      "id": "colphne",
+      "zhName": "寇尔芙",
+      "enName": "Colphne",
+      "url": "assets/characters/colphne.glb",
+      "bytes": 554856,
+      "triangles": 29849,
+      "hipHeight": 0.8252
+    },
+    {
+      "id": "charolic-training",
+      "zhName": "克罗丽科·训练服",
+      "enName": "Charolic (Training)",
+      "url": "assets/characters/charolic-training.glb",
+      "bytes": 486712,
+      "triangles": 33576,
+      "hipHeight": 0.9729
+    },
+    {
+      "id": "charolic-skin",
+      "zhName": "克罗丽科·跃行脱兔",
+      "enName": "Charolic (Leaping Hare)",
+      "url": "assets/characters/charolic-skin.glb",
+      "bytes": 526688,
+      "triangles": 38703,
+      "hipHeight": 0.9739
+    },
+    {
+      "id": "tololo",
+      "zhName": "托洛洛",
+      "enName": "Tololo",
+      "url": "assets/characters/tololo.glb",
+      "bytes": 804700,
+      "triangles": 40000,
+      "hipHeight": 0.9713
+    },
+    {
+      "id": "qiongjiu",
+      "zhName": "琼玖",
+      "enName": "QiongJiu",
+      "url": "assets/characters/qiongjiu.glb",
+      "bytes": 710788,
+      "triangles": 39989,
+      "hipHeight": 0.974
+    },
+    {
+      "id": "ksenia",
+      "zhName": "科谢尼娅",
+      "enName": "Ksenia",
+      "url": "assets/characters/ksenia.glb",
+      "bytes": 638152,
+      "triangles": 38559,
+      "hipHeight": 0.8237
+    },
+    {
+      "id": "littara",
+      "zhName": "莉塔拉",
+      "enName": "Littara",
+      "url": "assets/characters/littara.glb",
+      "bytes": 749296,
+      "triangles": 43342,
+      "hipHeight": 0.8166
+    },
+    {
+      "id": "mosin",
+      "zhName": "莫辛纳甘",
+      "enName": "Mosin-Nagant",
+      "url": "assets/characters/mosin.glb",
+      "bytes": 711868,
+      "triangles": 35644,
+      "hipHeight": 0.9694
+    },
+    {
+      "id": "groza",
+      "zhName": "闪电·商城皮肤",
+      "enName": "Groza (Shop Skin)",
+      "url": "assets/characters/groza.glb",
+      "bytes": 716656,
+      "triangles": 41005,
+      "hipHeight": 0.9747
+    },
+    {
+      "id": "daiyan",
+      "zhName": "黛烟",
+      "enName": "DaiYan",
+      "url": "assets/characters/daiyan.glb",
+      "bytes": 680592,
+      "triangles": 34984,
+      "hipHeight": 1.0455
+    }
+  ]
+}

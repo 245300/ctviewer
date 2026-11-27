@@ -1,0 +1,17 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+tests/screenshots/
+
+# Generated model pipeline output (scripts/build.sh writes these)
+/models_src/
+/build/
+
+# Android build output (the WebView project is kept for reference; the APK is
+# no longer shipped - the install path is the browser)
+/android/build/
+
+# Local tool state
+/.mimosa/
+/.playwright-mcp/

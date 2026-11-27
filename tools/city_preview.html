@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>城市布局预览</title>
+<style>
+  html, body { margin:0; height:100%; background:#0b0d10; overflow:hidden; }
+  canvas { display:block; }
+  #hud { position:fixed; left:12px; top:12px; color:#cfe3ff; font:12px/1.5 ui-monospace,monospace;
+         background:#0009; padding:8px 10px; border-radius:6px; pointer-events:none; white-space:pre; }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const TARGET = parseFloat(q.get('span') || '620');
+const PLAZA = parseFloat(q.get('plaza') || '0');
+const YMODE = q.get('y') || 'min';          // 'min' | 'plaza'
+const hud = document.getElementById('hud');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fa6bd);
+scene.fog = new THREE.Fog(0x8fa6bd, 400, 1600);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.5, 4000);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xdff0ff, 0x50565e, 2.0));
+const sun = new THREE.DirectionalLight(0xfff3df, 2.2);
+sun.position.set(120, 220, 90);
+scene.add(sun);
+
+function boxDistance(box) {
+  const dx = box.min.x <= 0 && box.max.x >= 0 ? 0 : Math.min(Math.abs(box.min.x), Math.abs(box.max.x));
+  const dz = box.min.z <= 0 && box.max.z >= 0 ? 0 : Math.min(Math.abs(box.min.z), Math.abs(box.max.z));
+  return Math.hypot(dx, dz);
+}
+
+const D = 260;
+function frame(kind) {
+  const c = controls.target;
+  if (kind === 'top')   { camera.position.set(0.1, D * 1.9, 0.1); controls.target.set(0, 0, 0); }
+  if (kind === 'front') { camera.position.set(0, D * 0.34, D * 1.15); controls.target.set(0, D * 0.12, 0); }
+  if (kind === 'side')  { camera.position.set(D * 1.15, D * 0.34, 0); controls.target.set(0, D * 0.12, 0); }
+  if (kind === 'hero')  { camera.position.set(D * 0.6, D * 0.42, D * 0.75); controls.target.set(0, D * 0.1, 0); }
+  if (kind === 'street'){ camera.position.set(18, 6, 42); controls.target.set(0, 4, 0); }
+  if (kind === 'wide')  { camera.position.set(D * 0.9, D * 0.75, D * 1.5); controls.target.set(0, 0, 0); }
+  controls.update();
+}
+frame(q.get('cam') || 'hero');
+
+(async () => {
+  const fbx = await new FBXLoader().loadAsync('/models_src/_unity_city/Models/city_web.fbx');
+  // Textures: give them a beat, then whatever is ready is what we see.
+  await new Promise((r) => setTimeout(r, 2500));
+
+  const box = new THREE.Box3().setFromObject(fbx);
+  const size = box.getSize(new THREE.Vector3());
+  fbx.scale.setScalar(TARGET / Math.max(size.x, size.z));
+  fbx.updateMatrixWorld(true);
+  const b2 = new THREE.Box3().setFromObject(fbx);
+  const c2 = b2.getCenter(new THREE.Vector3());
+  fbx.position.x -= c2.x;
+  fbx.position.z -= c2.z;
+
+  // Where does the "street level" sit? The bbox floor is the underside of the
+  // kit, not something anyone walks on - the city's actual deck is the big flat
+  // ground plane at ~64.8 m (already in normalised metres; see fbx2glb.html).
+  let dropY = b2.min.y;
+  if (YMODE !== 'min') dropY = b2.min.y + parseFloat(YMODE);
+  fbx.position.y -= dropY;
+  fbx.updateMatrixWorld(true);
+
+  if (PLAZA > 0) {
+    const doomed = [];
+    fbx.traverse((o) => {
+      if (!o.isMesh) return;
+      const b = new THREE.Box3().setFromObject(o);
+      if (boxDistance(b) < PLAZA) doomed.push(o);
+    });
+    doomed.forEach((o) => { o.parent?.remove(o); o.geometry?.dispose?.(); });
+  }
+
+  scene.add(fbx);
+  window.__CITY = fbx;
+
+  // The garage's real footprint, so the shot shows whether it fits.
+  const marker = new THREE.Mesh(
+    new THREE.BoxGeometry(24, 7.4, 14),
+    new THREE.MeshBasicMaterial({ color: 0xff3355, wireframe: true, depthTest: false }),
+  );
+  marker.position.y = 3.7;
+  marker.renderOrder = 99;
+  scene.add(marker);
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(30, 20),
+    new THREE.MeshBasicMaterial({ color: 0xff3355, transparent: true, opacity: 0.25, depthTest: false }),
+  );
+  plate.rotation.x = -Math.PI / 2;
+  plate.position.y = 0.05;
+  plate.renderOrder = 98;
+  scene.add(plate);
+
+  const b3 = new THREE.Box3().setFromObject(fbx);
+  hud.textContent = `span ${TARGET} m · plaza ${PLAZA} m · y=${YMODE}\n` +
+    `bbox y ${b3.min.y.toFixed(1)}…${b3.max.y.toFixed(1)} · x ${b3.min.x.toFixed(0)}…${b3.max.x.toFixed(0)}`;
+  window.__PREVIEW_READY__ = true;
+})();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>

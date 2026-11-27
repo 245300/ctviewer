@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mixamo 原生人物 + 动作 验证</title>
+<style>
+  html, body { margin:0; background:#0b0d10; color:#cfe3ff; font:12px/1.5 ui-monospace,monospace; }
+  #hud { padding:8px 12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<canvas id="sheet"></canvas>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// Proof page for the new pipeline: a Mixamo-skeleton character playing a
+// Mixamo clip that was exported on its own rig - no retargeting at all, so
+// hands, feet and waist are exactly what Mixamo authored.
+//   ?char=Xbot&clip=Idle&t=1&view=front&hud=0&w=760&h=900
+const q = new URLSearchParams(location.search);
+const char = q.get('char') || 'Xbot';
+const clipName = q.get('clip') || 'Idle';
+const time = Number(q.get('t') || 1);
+const view = q.get('view') || 'front';
+const hud = document.getElementById('hud');
+if (q.get('hud') === '0') hud.style.display = 'none';
+window.__ERR__ = [];
+window.addEventListener('error', (e) => window.__ERR__.push(String(e.error?.stack || e.message)));
+window.addEventListener('unhandledrejection', (e) => window.__ERR__.push('rejection: ' + (e.reason?.stack || e.reason)));
+
+const CHAR_FILES = {
+  Xbot: '/build/_oss/Xbot.glb',
+  Soldier: '/build/_oss/Soldier.glb',
+  Michelle: '/build/_oss/Michelle.glb',
+};
+const CLIP_FILES = {
+  'Idle': '/build/_clips/Idle.glb',
+  'Walking': '/build/_clips/Walking.glb',
+  'Running': '/build/_clips/Running.glb',
+  'Jumping': '/build/_clips/Jumping.glb',
+  'Breakdance Ending 1': '/build/_clips/Breakdance_Ending_1.glb',
+  'Breakdance Freeze Var 3': '/build/_clips/Breakdance_Freeze_Var_3.glb',
+  'Butterfly Twirl': '/build/_clips/Butterfly_Twirl.glb',
+  'Capoeira': '/build/_clips/Capoeira.glb',
+  'Fist Fight B': '/build/_clips/Fist_Fight_B.glb',
+  'Martelo 2': '/build/_clips/Martelo_2.glb',
+  'Roundhouse Kick': '/build/_clips/Roundhouse_Kick.glb',
+  'Shoved Reaction With Spin': '/build/_clips/Shoved_Reaction_With_Spin.glb',
+  'Stable Sword Inward Slash': '/build/_clips/Stable_Sword_Inward_Slash.glb',
+  'Stand Up': '/build/_clips/Stand_Up.glb',
+  'Standing Torch Melee Attack 01': '/build/_clips/Standing_Torch_Melee_Attack_01.glb',
+};
+
+const loader = new GLTFLoader();
+const W = Number(q.get('w') || 760), H = Number(q.get('h') || 900);
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.setSize(W, H);
+const canvas = renderer.domElement;
+canvas.style.width = W + 'px';
+document.body.appendChild(canvas);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x151a20);
+scene.add(new THREE.HemisphereLight(0xdfefff, 0x2a3038, 2.4));
+const key = new THREE.DirectionalLight(0xfff2e0, 2.6); key.position.set(3, 5, 4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x7fb4ff, 1.8); rim.position.set(-4, 3, -3); scene.add(rim);
+scene.add(new THREE.GridHelper(6, 12, 0x33506b, 0x22303d));
+
+const charGltf = await loader.loadAsync(CHAR_FILES[char] + '?t=' + Date.now());
+const root = charGltf.scene;
+root.traverse((o) => {
+  if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; o.frustumCulled = false; }
+});
+scene.add(root);
+
+const clipGltf = await loader.loadAsync(CLIP_FILES[clipName] + '?t=' + Date.now());
+const clip = clipGltf.animations[0];
+// Blender's FBX importer leaves a +90 deg X on the armature object, and the
+// exporter writes it into the GLB.  A Mixamo character GLB has no such
+// rotation, so the clip would lay the character on its back.  Strip it here
+// (the production pipeline strips it at export time instead).
+for (const track of clip.tracks) {
+  if (track.name === 'Armature.quaternion') {
+    for (let i = 0; i < track.values.length; i += 4) {
+      track.values[i] = 0; track.values[i + 1] = 0;
+      track.values[i + 2] = 0; track.values[i + 3] = 1;
+    }
+  }
+}
+for (const n of clipGltf.scene.children) {
+  if (n.name === 'Armature') n.rotation.set(0, 0, 0);
+}
+const mixer = new THREE.AnimationMixer(root);
+const action = mixer.clipAction(clip);
+action.setLoop(THREE.LoopOnce, 1);
+action.clampWhenFinished = true;
+action.play();
+mixer.setTime(time);
+root.updateMatrixWorld(true);
+
+const box = new THREE.Box3();
+root.traverse((o) => {
+  if (!o.isSkinnedMesh) return;
+  o.computeBoundingBox?.();
+  if (o.boundingBox) box.union(o.boundingBox.clone().applyMatrix4(o.matrixWorld));
+});
+if (box.isEmpty()) box.setFromObject(root);
+const size = box.getSize(new THREE.Vector3());
+const center = box.getCenter(new THREE.Vector3());
+const DIRS = { front: [0, 0.10, 1], side: [1, 0.08, 0], three: [1, 0.32, 1], back: [0, 0.10, -1] };
+const dir = new THREE.Vector3(...(DIRS[view] || DIRS.front)).normalize();
+const dist = Math.max(2.0, size.y * 1.5);
+const camera = new THREE.PerspectiveCamera(32, W / H, 0.05, 80);
+camera.position.copy(center).addScaledVector(dir, dist);
+camera.lookAt(center);
+renderer.render(scene, camera);
+
+// Bone-level sanity: are the hands and feet where Mixamo put them?
+const bonePos = {};
+for (const n of ['Hips', 'Head', 'LeftHand', 'RightHand', 'LeftFoot', 'RightFoot', 'LeftToeBase']) {
+  const b = root.getObjectByName('mixamorig' + n) || root.getObjectByName('mixamorig:' + n);
+  if (b) {
+    const p = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
+    bonePos[n] = [+p.x.toFixed(3), +p.y.toFixed(3), +p.z.toFixed(3)];
+  }
+}
+const stats = {
+  char, clip: clip.name, duration: +clip.duration.toFixed(2), t: time,
+  tracks: clip.tracks.length,
+  bbox: { minY: +box.min.y.toFixed(3), maxY: +box.max.y.toFixed(3),
+          size: size.toArray().map((v) => +v.toFixed(2)) },
+  bones: bonePos,
+  err: window.__ERR__,
+};
+hud.textContent = JSON.stringify(stats, null, 1);
+window.__STATS__ = stats;
+window.__DONE__ = true;
+</script>
+</body>
+</html>

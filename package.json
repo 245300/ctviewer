@@ -1,0 +1,25 @@
+{
+  "name": "ctviewer",
+  "version": "2.19.1",
+  "description": "Pure front-end 3D exploded-view viewer for 34 real racing and sports cars, built with Three.js and Draco.",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "serve": "python3 -m http.server 8030 --bind 0.0.0.0",
+    "test": "python3 tests/test_static.py",
+    "test:browser": "node tests/browser_test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@gltf-transform/cli": "^4.2.1",
+    "playwright": "^1.49.1",
+    "three": "^0.169.0"
+  },
+  "private": true
+}

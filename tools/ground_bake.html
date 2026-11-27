@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>地面贴合烘焙</title>
+<style>
+  html, body { margin:0; background:#0b0d10; color:#cfe3ff; font:12px/1.5 ui-monospace,monospace; }
+  #hud { padding:8px 12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { adaptHipsClip, measureGroundLift } from '/js/character-clips.js';
+
+// Offline pass: for each character, apply the same hip rebase the runtime uses
+// and measure how far every clip's lowest skinned vertex goes under y = 0.
+// Writes assets/characters/ground.json (served, so the runtime never samples).
+const hud = document.getElementById('hud');
+window.__ERR__ = [];
+window.addEventListener('error', (e) => window.__ERR__.push(String(e.error?.stack || e.message || e.error)));
+window.addEventListener('unhandledrejection', (e) => window.__ERR__.push('rejection: ' + (e.reason?.stack || e.reason)));
+
+const loader = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath('/vendor/draco/');
+loader.setDRACOLoader(draco);
+
+const catalog = await fetch(`/assets/characters/characters.json?t=${Date.now()}`, { cache: 'no-store' }).then((r) => r.json());
+const animGltf = await loader.loadAsync(`/${catalog.animationsUrl}?t=${Date.now()}`);
+const clips = animGltf.animations;
+const scene = new THREE.Scene();
+const out = { refHipHeight: catalog.refHipHeight, characters: {} };
+
+for (const meta of catalog.characters) {
+  hud.textContent = `measuring ${meta.id}…`;
+  const gltf = await loader.loadAsync(`/${meta.url}?t=${Date.now()}`);
+  const root = gltf.scene;
+  scene.add(root);
+  const hipsRest = root.getObjectByName('Hips')?.position.clone() || null;
+  const mixer = new THREE.AnimationMixer(root);
+  const actions = {};
+  for (const clip of clips) {
+    const adapted = adaptHipsClip(clip, meta.hipHeight, catalog.refHipHeight, hipsRest);
+    actions[clip.name] = mixer.clipAction(adapted);
+  }
+  out.characters[meta.id] = measureGroundLift(actions, root, mixer);
+  scene.remove(root);
+  mixer.uncacheRoot(root);
+}
+
+const json = JSON.stringify(out);
+window.__GROUND__ = out;
+window.__GROUND_JSON__ = json;
+hud.textContent = `done · ${catalog.characters.length} characters · ${json.length} bytes\n` +
+  `copy window.__GROUND_JSON__ into assets/characters/ground.json`;
+window.__DONE__ = true;
+</script>
+</body>
+</html>

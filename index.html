@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#05070b" />
+  <meta name="description" content="CTViewer — 基于 Three.js 的纯前端真实跑车 3D 拆解查看器，34 款车型、逐零件爆炸图、12 种车漆工艺、3D 车库场景、Draco 压缩与离线运行。" />
+  <title>CTViewer · Real Race Car 3D 拆解查看器</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070b10'/%3E%3Cpath d='M14 40l18-22 18 22H37l-5-7-5 7z' fill='%238fe8ff'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="scene" aria-label="Concept Car 3D 模型视图"></canvas>
+    <div class="scene-vignette" aria-hidden="true"></div>
+    <div class="scene-grain" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 44 44"><path d="M6 31L22 9l16 22h-9.5L22 21.5 15.5 31z" fill="currentColor"/><path d="M15 36h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </div>
+        <div class="brand-text">
+          <h1>CTViewer<span class="brand-dot">.</span></h1>
+          <p id="brand-sub">Ferrari F430 · 3D Exploded View</p>
+        </div>
+      </div>
+
+      <div class="topbar-metrics" aria-label="模型指标">
+        <div class="metric-chip"><span>PARTS</span><strong id="metric-parts">—</strong></div>
+        <div class="metric-chip"><span>SOURCE</span><strong id="metric-size">—</strong></div>
+        <div class="metric-chip is-accent"><span>DRACO</span><strong id="metric-compressed">—</strong></div>
+        <div class="metric-chip"><span>TRIS</span><strong id="metric-tris">—</strong></div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="status-pill"><i></i><span id="status-label">本地资源 · 加载中</span></div>
+        <button class="icon-btn" id="btn-help" type="button" aria-label="帮助与快捷键" title="帮助与快捷键">?</button>
+        <button class="icon-btn" id="btn-fullscreen" type="button" aria-label="全屏" title="全屏">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="car-strip-wrap">
+      <button class="car-strip-count" id="btn-library" type="button" aria-label="打开车型库" title="车型库 (L)">
+        <strong id="car-count">34</strong><small>款</small>
+      </button>
+      <button class="car-strip-arrow" id="car-prev" type="button" aria-label="向左滚动车型">‹</button>
+      <nav id="car-strip" class="car-strip glass-panel" aria-label="车型选择"></nav>
+      <button class="car-strip-arrow" id="car-next" type="button" aria-label="向右滚动车型">›</button>
+    </div>
+
+    <!-- Paint finish selector -->
+    <aside class="paint-panel glass-panel" aria-label="车漆工艺选择">
+      <div class="panel-kicker">PAINT FINISH</div>
+      <div class="panel-title-row">
+        <h2>车漆工艺</h2>
+        <span class="micro-badge">460ms</span>
+      </div>
+      <div id="paint-list" class="paint-list" role="radiogroup" aria-label="12 种车漆工艺"></div>
+      <div id="paint-caption" class="paint-caption"></div>
+      <label class="paint-custom">
+        <span>自定义底色</span>
+        <input type="color" id="paint-color" value="#3a78b5" aria-label="自定义车漆底色" />
+      </label>
+    </aside>
+
+    <!-- Component index + inspector -->
+    <aside class="parts-panel glass-panel" aria-label="零件清单与检视">
+      <section id="inspector" class="inspector">
+        <div id="inspector-empty">
+          <div class="panel-kicker">COMPONENT INSPECTOR</div>
+          <h2>整车总览</h2>
+          <p class="inspector-hint">悬停任意零件查看名称，点击锁定零件并读取工程信息。</p>
+          <div class="summary-grid">
+            <div><span>零件总数</span><strong id="summary-parts">—</strong></div>
+            <div><span>车漆工艺</span><strong>12</strong></div>
+            <div><span>压缩格式</span><strong>Draco</strong></div>
+            <div><span>运行模式</span><strong>Offline</strong></div>
+          </div>
+        </div>
+
+        <div id="inspector-content" class="hidden">
+          <div class="inspect-head">
+            <span id="inspect-index" class="inspect-index">001</span>
+            <span id="inspect-dot" class="inspect-dot"></span>
+            <span id="inspect-category" class="inspect-category">外饰</span>
+          </div>
+          <h3 id="inspect-name">车身壳体</h3>
+          <code id="inspect-id">BODY_Shell</code>
+          <dl class="inspect-specs">
+            <div><dt>材质</dt><dd id="inspect-material">—</dd></div>
+            <div><dt>三角面</dt><dd id="inspect-triangles">—</dd></div>
+            <div><dt>顶点</dt><dd id="inspect-vertices">—</dd></div>
+          </dl>
+          <div class="inspect-actions">
+            <button type="button" id="inspect-focus" class="mini-btn">聚焦零件</button>
+            <button type="button" id="inspect-isolate" class="mini-btn">隔离查看</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="parts-head">
+        <div>
+          <div class="panel-kicker">COMPONENT INDEX</div>
+          <h2>零件清单</h2>
+        </div>
+        <span id="summary-count" class="part-count-badge">—</span>
+      </div>
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input id="part-search" type="search" placeholder="搜索零件 / 编号 / 类别" autocomplete="off" />
+      </div>
+      <div id="category-filters" class="filters" aria-label="零件类别筛选"></div>
+      <div id="parts-list" class="parts-list" role="listbox" aria-label="零件清单"></div>
+    </aside>
+
+    <div id="isolate-chip" class="isolate-chip">
+      <span>隔离查看中</span>
+      <button type="button" id="isolate-exit">退出</button>
+    </div>
+
+    <!-- Bottom timeline / actions -->
+    <footer class="bottom-dock glass-panel">
+      <div class="dock-group dock-group-show">
+        <button class="dock-btn dock-btn-primary" id="btn-explode-play" type="button" aria-label="播放或收起爆炸拆解">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4 8-4M12 11v10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <span>拆解演示</span>
+        </button>
+        <div class="explode-control">
+          <div class="explode-label"><span>爆炸拆解</span><output id="explode-value">0%</output></div>
+          <input id="explode-slider" type="range" min="0" max="100" value="0" step="1" aria-label="爆炸拆解程度" />
+        </div>
+      </div>
+      <div class="dock-divider" aria-hidden="true"></div>
+      <div class="dock-group">
+        <div class="view-presets" role="group" aria-label="视角预设">
+          <button type="button" data-view="front" title="前视图">前</button>
+          <button type="button" data-view="side" title="侧视图">侧</button>
+          <button type="button" data-view="rear" title="后视图">后</button>
+          <button type="button" data-view="top" title="顶视图">顶</button>
+          <button type="button" data-view="under" title="底盘仰视（自动升起两柱举升机）">底</button>
+          <button type="button" data-view="hero" class="is-active" title="45° 视角">45°</button>
+        </div>
+        <div class="sky-presets" id="sky-presets" role="group" aria-label="天光时段">
+          <button type="button" data-sky="day" class="is-active" title="白天（实拍晴空）">日</button>
+          <button type="button" data-sky="dusk" title="阴天（Unity 场景天空）">阴</button>
+          <button type="button" data-sky="night" title="夜晚（实拍星空）">夜</button>
+        </div>
+      </div>
+      <div class="dock-divider" aria-hidden="true"></div>
+      <div class="dock-group dock-group-tools">
+        <button class="dock-btn is-active" id="btn-scene" type="button" aria-pressed="true" title="切换车库/影棚场景">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5L12 3l9 7.5M5 9.5V21h14V9.5M9 21v-6h6v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span id="btn-scene-label">车库</span>
+        </button>
+        <button class="dock-btn" id="btn-explore" type="button" aria-pressed="false" title="选择一位人物，从出生点出发在城市里自由探索">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 9v6m0 0l-3 6m3-6l3 6M7 12h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span>探索</span>
+        </button>
+        <button class="dock-btn" id="btn-lights" type="button" aria-pressed="false" title="天花板彩灯（霓虹灯管 + 彩色环境光），可开关">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 18h5M10 21h4M12 3a6 6 0 00-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0012 3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>彩灯</span>
+        </button>
+        <button class="dock-btn" id="btn-rotate" type="button" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 11-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>自动旋转</span>
+        </button>
+        <button class="dock-btn" id="btn-fit" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span>自动构图</span>
+        </button>
+        <button class="dock-btn" id="btn-reset" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 108-8 8 8 0 00-5.66 2.34L4 9M4 4v5h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>重置</span>
+        </button>
+      </div>
+    </footer>
+
+    <!-- Gameplay: test drive / photo / two-post lift, as small icon cards -->
+    <div class="action-dock" aria-label="玩法模式">
+      <button class="action-btn" id="btn-drive" type="button" title="坐进车里试驾 (V)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 15l1.6-5.2A2 2 0 018.5 8h7a2 2 0 011.9 1.8L19 15M4 15h16v4H4zM6.5 19v2M17.5 19v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="15" r="1.1" fill="currentColor"/><circle cx="16" cy="15" r="1.1" fill="currentColor"/></svg>
+        <span>试驾</span>
+      </button>
+      <button class="action-btn" id="btn-photo" type="button" title="拍照 / 录像模式，隐藏界面自由取景 (P)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.4-2h7.2L17 8h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <span>拍照</span>
+      </button>
+      <button class="action-btn" id="btn-lift" type="button" title="升起 / 放下两柱举升机 (G)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v14M18 4v14M9 18h6M4 20h16M6 8h3v3H6zM18 8h-3v3h3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>举升</span>
+      </button>
+    </div>
+
+    <div id="car-hint" class="car-hint" aria-hidden="true">
+      <span>车就在旁边</span>
+      <button type="button" id="car-hint-enter"><kbd>E</kbd> 上车试驾</button>
+    </div>
+
+    <div id="explore-hud" class="explore-hud" aria-hidden="true">
+      <div class="explore-head glass-panel">
+        <div class="panel-kicker">CITY EXPLORER</div>
+        <h2 id="explore-name">—</h2>
+        <p class="explore-keys"><kbd>WASD</kbd> 移动 · <kbd>Shift</kbd> 疾跑 · <kbd>Space</kbd> 跳跃 · <kbd>拖拽</kbd> 视角 · <kbd>滚轮</kbd> 缩放 · <kbd>R</kbd> 回出生点</p>
+        <div class="explore-btns">
+          <button type="button" id="explore-drive" class="mini-btn">开车</button>
+          <button type="button" id="explore-switch" class="mini-btn">换人物</button>
+          <button type="button" id="explore-spawn" class="mini-btn">回出生点</button>
+          <button type="button" id="explore-exit" class="mini-btn">退出探索</button>
+        </div>
+      </div>
+      <div class="explore-actions glass-panel">
+        <div class="panel-kicker">ACTION LIBRARY · 15</div>
+        <div id="explore-action-list" class="explore-action-list"></div>
+      </div>
+    </div>
+
+    <div id="drive-hud" class="drive-hud" aria-hidden="true">
+      <div class="drive-cluster glass-panel">
+        <div class="drive-top">
+          <span class="drive-gear" id="drive-gear">N</span>
+          <span class="drive-mode">TEST DRIVE</span>
+          <span class="drive-drift" id="drive-drift">DRIFT</span>
+        </div>
+        <div class="drive-speed"><strong id="drive-speed">0</strong><span>km/h</span></div>
+        <div class="drive-meter"><i id="drive-rpm"></i></div>
+        <div class="drive-pedals">
+          <span>油门</span><i id="drive-throttle"></i>
+          <span>刹车</span><i id="drive-brake"></i>
+        </div>
+      </div>
+      <div class="drive-help glass-panel">
+        <p><kbd>W</kbd>/<kbd>S</kbd> 油门 / 刹车倒车 · <kbd>A</kbd>/<kbd>D</kbd> 转向 · <kbd>Space</kbd> 手刹漂移</p>
+        <p><kbd>拖拽</kbd> 环视 · <kbd>滚轮</kbd> 远近 · <kbd>M</kbd> 引擎声 · <kbd>G</kbd> 举升机位举升 · <kbd>E</kbd> 停车下车 · <kbd>Esc</kbd> 强制下车</p>
+        <div class="drive-btns">
+          <button id="drive-sound" class="mini-btn" type="button">引擎声</button>
+          <button id="drive-exit" class="mini-btn" type="button">下车</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="photo-hud" class="photo-hud" aria-hidden="true">
+      <div class="photo-top glass-panel">
+        <span class="panel-kicker">PHOTO MODE</span>
+        <div id="photo-filters" class="photo-filters"></div>
+      </div>
+      <div id="photo-guides" class="photo-guides" aria-hidden="true">
+        <i class="v1"></i><i class="v2"></i><i class="h1"></i><i class="h2"></i>
+        <b class="c1"></b><b class="c2"></b><b class="c3"></b><b class="c4"></b>
+      </div>
+      <div class="photo-bottom glass-panel">
+        <button id="photo-guide" class="mini-btn" type="button">构图线</button>
+        <button id="photo-shot" class="photo-shot" type="button">拍照 (F)</button>
+        <button id="photo-record" class="mini-btn" type="button">录像 10s (R)</button>
+        <span id="photo-status" class="photo-status">WASD 飞行 · E/Q 升降 · 拖拽转向 · 滚轮变焦 · Shift 加速</span>
+        <button id="photo-exit" class="mini-btn" type="button">退出 (P)</button>
+      </div>
+    </div>
+
+    <div class="hud" aria-live="off">
+      <span id="hud-fps">— FPS</span>
+      <span class="hud-sep"></span>
+      <span id="hud-draw">— draws</span>
+      <span class="hud-sep"></span>
+      <span id="hud-tris">— tris</span>
+    </div>
+
+    <div id="tooltip" class="tooltip" role="tooltip"></div>
+
+    <div id="loading" class="loading">
+      <div class="loading-inner">
+        <div class="loader-mark"><span>CT</span></div>
+        <div class="loading-title">CTViewer</div>
+        <p id="loading-label">正在初始化渲染器</p>
+        <div class="loader-track"><i id="loading-bar"></i></div>
+        <div class="loader-meta"><span id="loading-percent">0%</span><span id="loading-size">34 CARS · DRACO</span></div>
+      </div>
+    </div>
+
+    <div id="error-panel" class="error-panel">
+      <h3>模型加载失败</h3>
+      <p id="error-text">—</p>
+      <button type="button" id="error-retry" onclick="location.reload()">重新加载</button>
+    </div>
+
+    <div id="help-modal" class="help-modal">
+      <div class="help-card glass-panel">
+        <button type="button" id="help-close" class="help-close" aria-label="关闭">×</button>
+        <div class="panel-kicker">GUIDE / SPEC</div>
+        <h2>操作与技术说明</h2>
+        <div class="help-grid">
+          <div>
+            <h3>交互</h3>
+            <ul>
+              <li><kbd>拖拽</kbd> 环绕观察 · <kbd>滚轮</kbd> 缩放</li>
+              <li><kbd>悬停</kbd> 菲涅尔高亮零件</li>
+              <li><kbd>点击</kbd> 锁定零件并查看工程信息</li>
+              <li><kbd>1–0</kbd> 切换 12 种车漆工艺 · <kbd>L</kbd> 车型库</li>
+              <li><kbd>←/→</kbd> 换车 · <kbd>↑/↓</kbd> 逐个零件 · <kbd>Esc</kbd> 取消选择</li>
+              <li><kbd>E</kbd> 拆解演示 · <kbd>R</kbd> 重置 · <kbd>F</kbd> 自动构图 · <kbd>A</kbd> 自动旋转</li>
+              <li><kbd>V</kbd> 试驾（W/S/A/D + Space 手刹）· <kbd>P</kbd> 拍照 / 录像 · <kbd>G</kbd> 两柱举升机</li>
+              <li><kbd>探索</kbd> 选一位人物下车库，在城市里自由行走 / 奔跑 / 跳跃，15 段动作可随时播放；走到车旁按 <kbd>E</kbd> 上车试驾</li>
+            </ul>
+          </div>
+          <div>
+            <h3>技术栈</h3>
+            <ul>
+              <li>Three.js r169 · WebGL 2 · 本地打包</li>
+              <li>Draco 几何压缩 + WASM 解码器</li>
+              <li>MeshPhysicalMaterial 五层车漆</li>
+              <li>460 ms 缓动过渡 · 菲涅尔边缘壳层</li>
+              <li>Service Worker 离线缓存 · jsDelivr 可选加速</li>
+            </ul>
+          </div>
+        </div>
+        <div class="help-note">本页面所有运行时资源均来自本地 <code>vendor/</code>，断网后仍然可以完整运行。</div>
+        <div class="help-note credit-note" id="credit-note">模型来源加载中…</div>
+      </div>
+    </div>
+
+    <div id="library" class="library-modal" aria-hidden="true">
+      <div class="library-card glass-panel" role="dialog" aria-modal="true" aria-label="车型库">
+        <header class="library-head">
+          <div>
+            <div class="panel-kicker">GARAGE / ALL CARS</div>
+            <h2>车型库 <span id="library-count" class="part-count-badge">34</span></h2>
+          </div>
+          <button type="button" id="library-close" class="help-close" aria-label="关闭车型库">×</button>
+        </header>
+        <div id="library-body" class="library-body"></div>
+      </div>
+    </div>
+
+    <div id="character-modal" class="library-modal character-modal" aria-hidden="true">
+      <div class="library-card glass-panel character-card" role="dialog" aria-modal="true" aria-label="人物选择">
+        <header class="library-head">
+          <div>
+            <div class="panel-kicker">CITY / ON FOOT</div>
+            <h2>选择人物 <span id="character-count" class="part-count-badge">10</span></h2>
+          </div>
+          <button type="button" id="character-close" class="help-close" aria-label="关闭人物选择">×</button>
+        </header>
+        <p class="explore-intro">选一位干员，从城市广场的出生点出发自由探索。人物带有 15 段动作，移动时自动切换行走 / 奔跑，空闲时保持自然站姿。</p>
+        <div id="character-body" class="character-body"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script>
+    // One-time cache reset after upgrading from an older cached build.
+    (() => {
+      const BUILD = '2.19.1';
+      if (location.hostname === 'appassets.local') return;
+      try {
+        if (localStorage.getItem('ctviewer-build') === BUILD) return;
+        localStorage.setItem('ctviewer-build', BUILD);
+        const tasks = [
+          'serviceWorker' in navigator
+            ? navigator.serviceWorker.getRegistrations().then((rs) => Promise.all(rs.map((r) => r.unregister()))).catch(() => [])
+            : Promise.resolve([]),
+          window.caches
+            ? caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => [])
+            : Promise.resolve([]),
+        ];
+        Promise.all(tasks).then(([regs, keys]) => {
+          const hadOld = (Array.isArray(regs) && regs.length) || (Array.isArray(keys) && keys.length);
+          if (hadOld && !sessionStorage.getItem('ctviewer-build-reload')) {
+            sessionStorage.setItem('ctviewer-build-reload', '1');
+            location.reload();
+          }
+        });
+      } catch (_) { /* storage unavailable */ }
+    })();
+  </script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
